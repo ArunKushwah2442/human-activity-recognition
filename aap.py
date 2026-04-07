@@ -1,98 +1,164 @@
-import streamlit as st
+import gradio as gr
 import numpy as np
-import cv2
-import tempfile
-import os
+import cv2, os, gdown
+from tensorflow.keras.models import load_model
 
-# =========================
-# TITLE
-# =========================
-st.markdown("""
-<h1 style='text-align:center;color:#00ffd5;'>🚀 HUMAN ACTIVITY RECOGNITION</h1>
-""", unsafe_allow_html=True)
+# ── Config ──
+N, SZ = 15, 96
+MODEL_PATH = "best_model.h5"
 
-# =========================
-# CLASSES
-# =========================
-CLASSES = [
-    "ApplyEyeMakeup","ApplyLipstick","Archery","BabyCrawling",
-    "BalanceBeam","BandMarching","BaseballPitch","Basketball",
-    "BasketballDunk","BenchPress","Biking","Billiards",
-    "BlowDryHair","BlowingCandles","BodyWeightSquats"
-]
+CLASSES = ["ApplyEyeMakeup","ApplyLipstick","Archery","BabyCrawling","BalanceBeam",
+           "BandMarching","BaseballPitch","Basketball","BasketballDunk","BenchPress",
+           "Biking","Billiards","BlowDryHair","BlowingCandles","BodyWeightSquats"]
 
-FRAMES_PER_VIDEO = 20
-IMG_SIZE = 64
+# ── Load Model ──
+if not os.path.exists(MODEL_PATH):
+    gdown.download("https://drive.google.com/uc?id=1KfZZYOLqHliU0XNlsxDSsBZU-FKmVpNu", MODEL_PATH)
 
-# =========================
-# FRAME EXTRACTION
-# =========================
-def extract_frames(video_path):
+model = load_model(MODEL_PATH, compile=False)
 
-    cap = cv2.VideoCapture(video_path)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+# ── Frame Extraction ──
+def extract_frames(path):
+    cap = cv2.VideoCapture(path)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+    idxs = np.linspace(0, total-1, N).astype(int)
+
     frames = []
-
-    if total <= 0:
-        return np.zeros((FRAMES_PER_VIDEO, IMG_SIZE, IMG_SIZE, 3))
-
-    idx = np.linspace(0, total-1, FRAMES_PER_VIDEO).astype(int)
-
-    for i in idx:
+    for i in idxs:
         cap.set(cv2.CAP_PROP_POS_FRAMES, i)
         ret, frame = cap.read()
-
         if ret:
-            frame = cv2.resize(frame, (IMG_SIZE, IMG_SIZE))
-            frame = frame / 255.0
+            frame = cv2.resize(frame, (SZ, SZ))
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) / 255.0
             frames.append(frame)
 
     cap.release()
 
-    while len(frames) < FRAMES_PER_VIDEO:
-        frames.append(np.zeros((IMG_SIZE, IMG_SIZE, 3)))
+    while len(frames) < N:
+        frames.append(np.zeros((SZ, SZ, 3)))
 
     return np.array(frames)
 
-# =========================
-# UI
-# =========================
-col1, col2 = st.columns([1,1])
+# ── Prediction ──
+def predict(video):
+    if video is None:
+        return ["No Input"] + ["-"] * 6
 
-uploaded = col1.file_uploader("📤 Upload Video", type=["mp4","avi","mov"])
+    frames = extract_frames(video)
+    pred = model(np.expand_dims(frames, 0))[0]
 
-if uploaded:
+    top5_idx = np.argsort(pred)[-5:][::-1]
+    top5 = [(CLASSES[i], f"{pred[i]*100:.2f}%") for i in top5_idx]
 
-    temp = tempfile.NamedTemporaryFile(delete=False)
-    temp.write(uploaded.read())
+    primary = top5[0][0]
+    confidence = top5[0][1]
 
-    col1.video(temp.name)
+    results = [f"{name} ({conf})" for name, conf in top5]
 
-    if col1.button("🚀 Analyze Video"):
+    return [primary, confidence] + results
 
-        with st.spinner("Analyzing..."):
+# ── CSS ──
+css = """
+body {
+    background:#0b0f19;
+    color:#e5e7eb;
+    font-family:'Segoe UI', sans-serif;
+}
+/* HEADINGS */
+h2 { color:#f97316; }
+p { color:#9ca3af; }
+/* CARDS */
+.gr-box, .gr-block {
+    background:#111827 !important;
+    border-radius:12px !important;
+    border:1px solid #2a2d36 !important;
+}
+/* BUTTON */
+button {
+    background:#f97316 !important;
+    color:white !important;
+    border:none !important;
+    border-radius:8px !important;
+    font-weight:600 !important;
+    height:45px !important;
+}
+button:hover {
+    background:#ea580c !important;
+}
+/* SHARE BOX */
+.share-box {
+    background:#111827;
+    padding:12px;
+    border-radius:10px;
+    margin-top:10px;
+    color:#f97316;
+    border:1px solid #2a2d36;
+}
+/* 🔥 REMOVE ORANGE STRIP */
+.gradio-container .wrap > div:first-child {
+    display: none !important;
+}
+/* CLEAN VIDEO BOX */
+.gradio-container video {
+    background:#111827 !important;
+}
+/* REMOVE ICONS BELOW */
+.gradio-container .controls {
+    display:none !important;
+}
+/* ROUND CORNERS FIX */
+.gradio-container .wrap {
+    border-radius:12px !important;
+    overflow:hidden !important;
+}
+"""
 
-            frames = extract_frames(temp.name)
-            frames = np.expand_dims(frames, axis=0)
+# ── UI ──
+with gr.Blocks(css=css) as demo:
 
-            # 🔥 Dummy prediction (no error)
-            pred = np.random.rand(1, len(CLASSES))
+    gr.Markdown("## 🎥 VisionAct AI")
+    gr.Markdown("Upload video to detect human activity (AI-based)")
 
-            label = np.argmax(pred)
-            conf = np.max(pred)
+    with gr.Row():
 
-        col2.success(f"🎯 Prediction: {CLASSES[label]}")
-        col2.write(f"Confidence: {conf*100:.2f}%")
+        # LEFT
+        with gr.Column():
 
-        col2.markdown("### 🔝 Top 3 Predictions")
+            gr.Markdown("### 📤 Upload Video")
 
-        top3 = np.argsort(pred[0])[-3:][::-1]
+            video_input = gr.Video(height=260)
 
-        for i in top3:
-            col2.write(f"{CLASSES[i]} : {pred[0][i]*100:.2f}%")
+        # RIGHT
+        with gr.Column():
 
-        col2.markdown("### 📊 All Probabilities")
+            primary = gr.Textbox(label="🎯 Primary Action")
+            confidence = gr.Textbox(label="📊 Confidence Score")
 
-        for i, cls in enumerate(CLASSES):
-            col2.write(cls)
-            col2.progress(float(pred[0][i]))
+            out1 = gr.Textbox(label="Top 1")
+            out2 = gr.Textbox(label="Top 2")
+            out3 = gr.Textbox(label="Top 3")
+            out4 = gr.Textbox(label="Top 4")
+            out5 = gr.Textbox(label="Top 5")
+
+            gr.HTML("""
+            <div class='share-box'>
+                🔗 Share via Link
+            </div>
+            """)
+
+    predict_btn = gr.Button("🚀 Analyze Video")
+
+    predict_btn.click(
+        fn=predict,
+        inputs=video_input,
+        outputs=[primary, confidence, out1, out2, out3, out4, out5]
+    )
+
+    gr.HTML("""
+    <div style="text-align:center;margin-top:20px;color:#6b7280;">
+        Built by <b>Arun Kushwah</b> · VisionAct AI
+    </div>
+    """)
+
+if __name__ == "__main__":
+    demo.launch(share=True)
